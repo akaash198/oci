@@ -352,6 +352,16 @@ Recommended usage:
 - Resource pressure (CPU/RAM) or upstream spikes in telemetry volume.
 - Too many concurrent inferences (ask operator to scale resources).
 
+### 8.9 Retraining (if enabled in your deployment)
+Some deployments enable “Retrain Model” or use an external ML engine to fit models on real data.
+
+What to expect:
+- Retraining is typically performed in **staging** first and promoted to production after validation.
+- A retrained model should come with an updated evaluation report (false positives/negatives, latency, drift).
+- If your org uses an external ML engine, you may see improvements only after the new artifact is deployed.
+
+If you need retraining enabled, ask your admin to follow the “Python ML engine” section in `DEVELOPER_GUIDE.md`.
+
 ---
 
 ## 9) Datasets

@@ -17,3 +17,10 @@ node_modules
 
 # Local dev server logs
 devserver.*.log
+
+# Python / ML artifacts
+__pycache__/
+*.pyc
+.venv/
+ml-engine/models/
+*.joblib

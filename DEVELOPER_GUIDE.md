@@ -174,6 +174,61 @@ Model catalog/logic is under `lib/ml/`:
 - `lib/ml/engine.ts`
 - `lib/ml/models/*`
 
+### Reality check: “training” vs. “inference” in this repo
+
+- The TypeScript implementations in `lib/ml/models/*` are lightweight, in-process detectors that simulate model behavior (feature extraction + scoring).
+- The `ml_models` table (served by `GET /api/ml/models`) stores model **metadata** like status/accuracy/runtime stats.
+- For **real training** (fitting on data and persisting artifacts), use the Python `ml-engine/` service added to this repo.
+
+### Python ML engine (real training + persisted artifacts)
+
+The `ml-engine/` directory contains a minimal FastAPI service that can:
+- train a sample model type (`tinyml_der`) and save artifacts (`.joblib` + metadata JSON)
+- run inference using the trained artifact
+
+This is intentionally small and meant as a starting point you can extend per model family.
+
+#### Run the ML engine locally
+
+```bash
+cd ml-engine
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Health check: `GET http://localhost:8000/health`
+
+#### Train `tinyml_der` (example)
+
+`tinyml_der` is implemented as a simple anomaly detector (IsolationForest) over DER telemetry windows.
+
+Send training windows as JSON:
+
+```bash
+curl -X POST http://localhost:8000/train/tinyml_der ^
+  -H "content-type: application/json" ^
+  -d "{\"samples\":[{\"deviceId\":\"INV-001\",\"powerOutput\":[1,2,3],\"setpoints\":[1,2,3],\"frequency\":[60,60,60],\"voltage\":[230,230,230],\"communicationPatterns\":[]}]}"
+```
+
+Then infer:
+
+```bash
+curl -X POST http://localhost:8000/infer/tinyml_der ^
+  -H "content-type: application/json" ^
+  -d "{\"data\":{\"deviceId\":\"INV-001\",\"powerOutput\":[1,2,100],\"setpoints\":[1,2,3],\"frequency\":[60,58,60],\"voltage\":[230,200,230],\"communicationPatterns\":[]}}"
+```
+
+Artifacts are written under `ml-engine/models/` by default (ignored by git).
+
+#### Wire Next.js to the external engine
+
+1. Set `ML_ENGINE_URL=http://localhost:8000` in `.env.local`.
+2. Restart the Next.js dev server.
+
+When configured, `POST /api/ml/inference` will call the external ML engine for supported model types (currently `tinyml_der`).
+
 ### Adding a model (suggested approach)
 1. Implement model logic/config under `lib/ml/models/`.
 2. Register it in the catalog/engine (`lib/ml/dataset-catalog.ts`, `lib/ml/engine.ts` as applicable).
