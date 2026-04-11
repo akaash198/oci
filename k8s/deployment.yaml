@@ -1,0 +1,414 @@
+# OT/ICS Cybersecurity Platform - Kubernetes Deployment
+# Production-grade deployment configuration
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ot-cybersecurity
+  labels:
+    app.kubernetes.io/name: ot-cybersecurity
+    app.kubernetes.io/version: "1.0.0"
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ot-cybersecurity
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  DETECTION_THRESHOLD: "0.7"
+  AUTO_EXECUTE_PLAYBOOKS: "true"
+  DATA_RETENTION_DAYS: "90"
+
+---
+# Secret for sensitive configuration (example - use sealed-secrets or external-secrets in production)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: ot-cybersecurity
+type: Opaque
+stringData:
+  SUPABASE_SERVICE_ROLE_KEY: "${SUPABASE_SERVICE_ROLE_KEY}"
+  NEXT_PUBLIC_SUPABASE_URL: "${NEXT_PUBLIC_SUPABASE_URL}"
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: "${NEXT_PUBLIC_SUPABASE_ANON_KEY}"
+
+---
+# Main Application Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ot-dashboard
+  namespace: ot-cybersecurity
+  labels:
+    app: ot-dashboard
+    component: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ot-dashboard
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ot-dashboard
+        component: frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/api/metrics"
+    spec:
+      serviceAccountName: ot-dashboard-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+        - name: app
+          image: ghcr.io/your-org/ot-cybersecurity:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/.next/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ot-dashboard
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfied: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ot-dashboard
+
+---
+# ML Engine Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-engine
+  namespace: ot-cybersecurity
+  labels:
+    app: ml-engine
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ml-engine
+  template:
+    metadata:
+      labels:
+        app: ml-engine
+        component: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      serviceAccountName: ml-engine-sa
+      containers:
+        - name: ml-engine
+          image: ghcr.io/your-org/ot-ml-engine:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: MODEL_PATH
+              value: "/models"
+            - name: REDIS_URL
+              value: "redis://redis-master:6379"
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"  # Optional: GPU for ML inference
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ml-models-pvc
+
+---
+# Service for Dashboard
+apiVersion: v1
+kind: Service
+metadata:
+  name: ot-dashboard
+  namespace: ot-cybersecurity
+  labels:
+    app: ot-dashboard
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: ot-dashboard
+
+---
+# Service for ML Engine
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-engine
+  namespace: ot-cybersecurity
+  labels:
+    app: ml-engine
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: ml-engine
+
+---
+# Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ot-dashboard-ingress
+  namespace: ot-cybersecurity
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+    - hosts:
+        - ot-security.your-domain.com
+      secretName: ot-dashboard-tls
+  rules:
+    - host: ot-security.your-domain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ot-dashboard
+                port:
+                  number: 80
+          - path: /api/ml
+            pathType: Prefix
+            backend:
+              service:
+                name: ml-engine
+                port:
+                  number: 8000
+
+---
+# Horizontal Pod Autoscaler for Dashboard
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ot-dashboard-hpa
+  namespace: ot-cybersecurity
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ot-dashboard
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Horizontal Pod Autoscaler for ML Engine
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-engine-hpa
+  namespace: ot-cybersecurity
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-engine
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+
+---
+# PersistentVolumeClaim for ML Models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ml-models-pvc
+  namespace: ot-cybersecurity
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard
+
+---
+# ServiceAccount for Dashboard
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ot-dashboard-sa
+  namespace: ot-cybersecurity
+
+---
+# ServiceAccount for ML Engine
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-engine-sa
+  namespace: ot-cybersecurity
+
+---
+# NetworkPolicy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ot-network-policy
+  namespace: ot-cybersecurity
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app: redis
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# PodDisruptionBudget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ot-dashboard-pdb
+  namespace: ot-cybersecurity
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ot-dashboard

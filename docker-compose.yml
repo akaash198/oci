@@ -1,0 +1,143 @@
+# OT/ICS Cybersecurity Platform - Docker Compose Configuration
+# For local development and testing
+
+version: '3.8'
+
+services:
+  # Main Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    depends_on:
+      - redis
+    networks:
+      - ot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ML Inference Engine (Python)
+  ml-engine:
+    build:
+      context: ./ml-engine
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_PATH=/models
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+    volumes:
+      - ml-models:/models
+    networks:
+      - ot-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # Redis for caching and real-time data
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ot-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+  # Modbus Simulator for testing
+  modbus-simulator:
+    image: oitc/modbus-server:latest
+    ports:
+      - "502:502"
+    networks:
+      - ot-network
+    restart: unless-stopped
+
+  # OPC-UA Server Simulator
+  opcua-simulator:
+    image: open62541/open62541:latest
+    ports:
+      - "4840:4840"
+    networks:
+      - ot-network
+    restart: unless-stopped
+
+  # MQTT Broker
+  mqtt-broker:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./config/mosquitto:/mosquitto/config
+      - mqtt-data:/mosquitto/data
+      - mqtt-logs:/mosquitto/log
+    networks:
+      - ot-network
+    restart: unless-stopped
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus:/etc/prometheus
+      - prometheus-data:/prometheus
+    networks:
+      - ot-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - ot-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+networks:
+  ot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  redis-data:
+  ml-models:
+  mqtt-data:
+  mqtt-logs:
+  prometheus-data:
+  grafana-data:
