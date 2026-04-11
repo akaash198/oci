@@ -153,15 +153,204 @@ Data sources are collectors/connectors that ingest telemetry from OT protocols a
 
 ## 8) ML models
 
-ML models generate detections from telemetry and context. The UI typically shows:
-- Which models are enabled/disabled
-- Health/status (ready, degraded, warming up)
-- Basic performance indicators (if enabled by your deployment)
+ShieldOT includes multiple OT/ICS-focused ML detectors and integrity checks. The **ML Models** area is where you:
+- See which models exist in your environment (inventory).
+- Check runtime status and basic performance stats.
+- Understand what each model detects and which datasets it is usually trained/validated against.
+- Use model output to drive investigations (alerts → incidents → playbooks).
 
-### Detection thresholds
-If your deployment supports thresholds (e.g., alert vs. critical cutoffs), changing them impacts alert volume.
-- Increase thresholds to reduce noise.
-- Decrease thresholds to catch more anomalies (expect more false positives).
+Important: the exact set of models, their configuration options, and whether “retraining”/“download weights” is enabled depends on your deployment and permissions.
+
+### 8.1 Model inventory (the ML Models page)
+The inventory is your “control tower” for model operations.
+
+What you can do there:
+- **Search** models by name/type.
+- **Confirm status** at a glance (active/training/degraded/offline depending on your deployment).
+- **Compare accuracy** (if populated in your environment).
+- **Review runtime stats** (e.g., inferences today, average latency, alerts generated).
+- **Open a model** to see details (click a row).
+
+How to read common columns:
+- **Model Name**: human label (e.g., “PINN FDI Detector”).
+- **Typology / Type**: the internal family (e.g., `pinn_fdi`, `drl_ddos`).
+- **Status**: operational state (see below).
+- **Accuracy**: a deployment-provided metric; treat as a relative indicator unless you know the evaluation method.
+- **Inferences (24h)**: how many times the model was invoked.
+- **Latency**: average inference time; spikes can indicate overload or upstream data issues.
+
+### 8.2 Model detail page (what it tells you)
+The detail page is intended for triage and explainability.
+
+Typical sections you may see:
+- **Core stats**: accuracy, inferences today, detections/alerts generated.
+- **Training datasets**: recommended reference datasets and links to dataset details (useful for validation and QA).
+- **Architecture / purpose**: a short description of what the model is designed to detect.
+- **Security assessment**: deployment-provided metadata about robustness/integrity checks.
+
+If your deployment enables it, you may also see actions such as:
+- **Retrain model**: triggers a training pipeline (usually non-production first).
+- **Download weights**: exports model artifacts for audit/backup (often restricted).
+
+### 8.3 Status meanings (operational guidance)
+Statuses vary by deployment, but these are common interpretations:
+- **Active**: the model is enabled and expected to run; alerts may be generated.
+- **Training**: model is being trained/retrained or warming up; detections may be unstable.
+- **Degraded**: model is running but not healthy (resource pressure, missing inputs, dependency issues).
+- **Offline/Inactive**: model is disabled or unavailable; no detections should be expected.
+
+If you see a degraded/offline state:
+1. Check whether telemetry is arriving for the relevant assets/data sources.
+2. Ask an operator to check `/api/health` and application logs.
+3. Confirm configuration/keys are present (Supabase, model toggles).
+
+### 8.4 Confidence, thresholds, and alert severity
+Most models emit a **confidence score** (or an anomaly/threat score). ShieldOT uses that score plus model-specific rules to decide whether to generate an alert and how severe it should be.
+
+General guidance:
+- Higher confidence usually means stronger evidence, not certainty.
+- Thresholds trade **noise vs. sensitivity**:
+  - Raise thresholds to reduce false positives (may miss subtle attacks).
+  - Lower thresholds to catch more suspicious behavior (more analyst workload).
+
+Severity mapping is deployment-specific, but a common pattern is:
+- **Critical**: immediate safety/availability risk or very high confidence.
+- **High**: credible threat; investigate quickly.
+- **Medium/Low**: anomaly worth validating; collect more context.
+
+### 8.5 The model families in this platform (what each one is for)
+Your environment may include some or all of these model types.
+
+#### 8.5.1 `pinn_fdi` — False data injection / sensor spoofing
+Detects inconsistencies between measurements and expected system physics.
+
+Typical signals used:
+- Sensor measurements over time.
+- A topology representation (how measurements relate to the system).
+
+What to do when it fires:
+- Validate whether the suspected sensors share a common network path, PLC, or gateway.
+- Compare against maintenance windows and calibration events.
+- Cross-check independent measurements (redundant sensors / historian / manual readings).
+
+#### 8.5.2 `cgan_ransomware` — Pre-encryption ransomware activity
+Detects behavioral indicators that often occur *before* mass encryption.
+
+Typical signals used:
+- API calls, process behaviors, file operations (including entropy changes), registry changes, network connections.
+
+What to do when it fires:
+- Identify the host/asset and isolate if necessary (especially engineering workstations/historians).
+- Collect process tree and file I/O evidence.
+- Check for shadow copy deletion, backup tampering, or security tool interference.
+
+#### 8.5.3 `tinyml_der` — DER & edge device attacks (inverters, chargers, batteries)
+Detects anomalies in DER telemetry and communication patterns (setpoint manipulation, frequency/voltage anomalies, unusual polling/exfil patterns).
+
+Typical signals used:
+- Power output, setpoints, frequency/voltage time series.
+- Communication pattern metadata.
+
+What to do when it fires:
+- Confirm whether the event coincides with grid disturbances or scheduled DER dispatch.
+- Check for coordinated behavior across multiple devices.
+- Validate comms endpoints and any recent firmware/config changes.
+
+#### 8.5.4 `yolo_physical` — Physical intrusion/sabotage (video + sensor fusion)
+Combines visual cues (objects/zones) with physical sensor anomalies (motion/vibration/acoustic/thermal).
+
+Typical signals used:
+- Optional video frame input.
+- Motion/vibration/acoustic/thermal sensor readings.
+
+What to do when it fires:
+- Validate against access control logs and camera views (authorized vs. unknown presence).
+- Correlate with safety alarms and perimeter sensors.
+- If repeated, treat as a security control failure and escalate.
+
+#### 8.5.5 `graph_mamba_firmware` — Firmware / supply chain anomalies
+Creates a firmware “fingerprint” and compares it to a baseline to detect tampering/backdoors/unexpected changes.
+
+Typical signals used:
+- Firmware binary (or extracted bytes) and metadata (vendor/model/version).
+- Optional baseline fingerprint for known-good comparison.
+
+What to do when it fires:
+- Quarantine the binary and stop propagation to other devices.
+- Compare against vendor release notes and signed hashes if available.
+- Escalate to firmware/OT engineering for controlled rollback/validation.
+
+#### 8.5.6 `drl_ddos` — DDoS/DoS traffic shaping and mitigation guidance
+Analyzes protocol traffic rates and recommends adaptive rate limits (and optionally blocks) to preserve critical OT traffic.
+
+Typical signals used:
+- Packets-per-second by protocol, connection counts, latency, queue utilization, protocol distribution.
+
+What to do when it fires:
+- Validate whether burst traffic is expected (maintenance, scanning, vendor remote access).
+- Apply recommended shaping/limits in a safe, staged way (start with non-critical protocols).
+- Confirm no safety-critical flows are impacted.
+
+#### 8.5.7 `behavioral_dna` — Insider threat / anomalous operator behavior
+Builds a per-user behavioral “DNA” from interaction patterns and detects significant deviation from baseline.
+
+Typical signals used:
+- Keystroke dynamics, mouse movement features, command/action sequences, session metadata.
+
+What to do when it fires:
+- Treat carefully: high false-positive risk during role changes, unusual shifts, or incident response itself.
+- Validate identity assurance signals (MFA, VPN location, device posture).
+- If suspicious, require step-up auth and tighten privileges temporarily.
+
+#### 8.5.8 `model_defense` — Model poisoning / federated update integrity
+Detects suspicious model updates (Byzantine clients, adversarial perturbations) and logs integrity evidence.
+
+Typical signals used:
+- Model update vectors from clients, client IDs, optional training data hashes/sources.
+
+What to do when it fires:
+- Quarantine suspect clients/updates.
+- Require re-attestation for update sources.
+- Roll back to last known-good model snapshot if integrity score is low.
+
+### 8.6 Using training datasets (what they are and how to use them)
+The “Training Datasets” section on a model helps you:
+- Understand which public/standard datasets are commonly used to evaluate a detector.
+- See expected column/feature shapes.
+- Validate your telemetry mapping (do your fields resemble what the model expects?).
+
+Recommended usage:
+1. Use dataset recommendations in non-production environments first.
+2. Confirm your telemetry normalization (units, timestamps, missing values).
+3. Record a baseline period of “known good” operations before tuning thresholds.
+
+### 8.7 Practical workflow: from model signal to response
+1. **Model produces a detection** (often becomes an alert).
+2. **Triage the alert**:
+   - confirm asset/source/time window
+   - check recent similar alerts (burst vs isolated)
+   - assess safety/availability impact
+3. **Create an incident** for anything requiring coordination.
+4. **Attach a playbook** to standardize evidence capture and actions.
+5. **Close the loop**: tune thresholds, improve telemetry quality, and document lessons learned.
+
+### 8.8 Troubleshooting ML models (common symptoms)
+**Models page is empty**
+- Your database may not have model records yet (ask an operator/admin to seed `ml_models`).
+
+**Model shows active but no alerts**
+- Telemetry may not be arriving (check charts and data sources).
+- Thresholds may be too strict.
+- The model may require specific inputs not currently produced by your connectors.
+
+**High false positives**
+- Increase threshold(s) gradually and monitor alert volume.
+- Verify telemetry quality and timestamp correctness (clock drift can cause artifacts).
+- Exclude maintenance windows or known operational transients from evaluation.
+
+**Latency spikes / degraded status**
+- Resource pressure (CPU/RAM) or upstream spikes in telemetry volume.
+- Too many concurrent inferences (ask operator to scale resources).
 
 ---
 
