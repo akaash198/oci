@@ -199,6 +199,11 @@ async function startPersistenceWorker(manager: DataSourceManager): Promise<void>
         timestamp: dp.timestamp.toISOString(),
         data_source_id: dp.sourceId,
         organization_id: (dp.metadata?.organizationId as string) || defaultOrgId,
+        tags: {
+          ...(dp.metadata || {}),
+          raw_metric_value: dp.value,
+          raw_metric_type: typeof dp.value,
+        },
       }));
 
       const { error } = await supabase.from('telemetry').insert(records);
